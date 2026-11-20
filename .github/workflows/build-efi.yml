@@ -1,0 +1,77 @@
+name: Build UEFI (.efi)
+
+# 触发条件：push 到 main、手动触发、以及每天定时保活（可选，防止 Actions 因长期不活跃被停用）
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - ".github/workflows/build-efi.yml"
+  workflow_dispatch:
+  # schedule:
+  #   - cron: "0 3 1 * *"   # 每月 1 号跑一次，需要保活时取消注释
+
+jobs:
+  build:
+    runs-on: ubuntu-latest          # 免费账户：公共仓库 Actions 不限量，私有仓库每月 2000 分钟
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出你的源码仓库
+        uses: actions/checkout@v4
+
+      - name: 安装 EDK II 构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential nasm iasl uuid-dev python3 git python3-setuptools
+
+      - name: 克隆 EDK II（固定版本，保证构建可复现）
+        run: |
+          git clone --depth 1 --recursive --branch edk2-stable202608 \
+            https://github.com/tianocore/edk2.git $HOME/edk2
+
+      - name: 初始化 EDK II 构建环境
+        run: |
+          cd $HOME/edk2
+          make -C BaseTools -j$(nproc)
+          . edksetup.sh BaseTools
+          echo "EDK2_HOME=$HOME/edk2" >> $GITHUB_ENV
+
+      # ============ 方式一：编译官方 HelloWorld（开箱即用，验证环境） ============
+      - name: 编译 HelloWorld.efi
+        run: |
+          cd $HOME/edk2
+          . edksetup.sh BaseTools
+          build -a X64 -t GCC5 \
+            -p MdeModulePkg/MdeModulePkg.dsc \
+            -m MdeModulePkg/Application/HelloWorld/HelloWorld.inf
+
+      # ============ 方式二：编译你自己写的模块 ============
+      # 把你的 .c / .inf / .dsc 放进仓库的 src/ 目录后，取消下面的注释并按实际路径修改：
+      # - name: 编译自定义 UEFI 应用
+      #   run: |
+      #     cd $HOME/edk2
+      #     . edksetup.sh BaseTools
+      #     build -a X64 -t GCC5 \
+      #       -p $GITHUB_WORKSPACE/src/MyApp/MyApp.dsc \
+      #       -m $GITHUB_WORKSPACE/src/MyApp/MyApp.inf
+
+      - name: 收集 .efi 产物
+        run: |
+          mkdir -p output
+          find $HOME/edk2/Build -name "*.efi" -exec cp {} output/ \;
+          ls -la output/
+
+      - name: 上传构建产物（运行结束后在 Actions 页面下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: efi-binaries
+          path: output/*.efi
+          retention-days: 30
+
+      # 可选：每次构建同时打一个 Release，方便长期下载
+      # - name: 发布到 Release
+      #   uses: softprops/action-gh-release@v2
+      #   if: startsWith(github.ref, 'refs/tags/')
+      #   with:
+      #     files: output/*.efi
